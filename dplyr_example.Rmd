@@ -1,0 +1,203 @@
+---
+title: 'Data wrangling with dplyr'
+author: 'David Hope'
+date: '2015-12-9'
+output: html_document
+theme: cerulean
+---
+
+
+# Introduction to Dplyr
+### I suggest you check out Sean Anderson's excellent tutorial at:
+### http://seananderson.ca/2014/09/13/dplyr-intro.html
+
+Also, I keep on my desktop for continual use:
+http://www.rstudio.com/wp-content/uploads/2015/02/data-wrangling-cheatsheet.pdf
+
+For today, we will just run through a basic script I created to summarize my shorebird survey data
+and to blend several site surveys into a single value.
+
+First step, load the required packages.
+
+
+```{r}
+### Script to import all datasets from python output ####
+# rm(list = ls())
+library(ggplot2)
+library(ggthemes)
+require(plyr)
+library(dplyr)
+```
+
+Then we can load in the data. The data shown here is cleaned data from the first 3 years of my shorebird survey.
+I also have a separate table that describes each site in size, shape and gives the full name.
+
+```{r}
+database.loc <- '~/Dropbox/SFU/ShorebirdSurveyDatabase/'
+
+
+wesa.counts.cleaned <- read.csv(paste(database.loc, 'Rscripts/wesa_cleaned.txt',sep = ""), sep = '\t', header = T)
+
+wesa.counts.cleaned$count.numeric <- as.numeric(wesa.counts.cleaned$Count_cleaned)
+
+site.codes <- read.csv(paste(database.loc, 'AreaCalculations/AreaComparison.csv', sep = ""),
+                       stringsAsFactors = FALSE)
+
+```
+
+With dplyr we can look at the data much more cleanly than with the regular print function.
+
+```{r}
+print(dplyr::tbl_df(wesa.counts.cleaned))
+```
+This output only shows the top few rows and often will clip out columns if the table is too wide. 
+I prefer str() to describe a dataframe.
+
+```{r}
+str(wesa.counts.cleaned)
+```
+
+
+## Lets summarize the data.
+
+The original data is a series of repeated counts for each date and at each site. I want to turn this into a table
+that gives a single abundance value for each date and site.
+
+To do this using the normal r coding, it would look something like this:
+
+```
+wesa.counts.cleaned$count.numeric <- as.numeric(wesa.counts.cleaned$Count_cleaned)
+wesa.removed.nas <- subset(wesa.counts.cleaned, !is.na(count.numeric), select = c(SiteID, RecordID, count.numeric)
+aggdata <-aggregate(wesa.removed.nas, 
+  by=list(wesa.removed.nas$SiteID, wesa.removed.nas$RecordID),
+  FUN = max, na.rm = T)
+aggdata$Year <- substr(aggdata$RecordID, 5,8)
+aggdata$Month <- substr(aggdata$RecordID, 9,9)
+aggdata$Day <- substr(aggdata$RecordID, 10,11)
+final.counts <- merge(aggdata, site.codes, by = 'SiteID')  
+str(final.counts)
+``` 
+To be honest, I could not get it to work. This is the general idea. The two problems dplyr really solves
+is to avoid having to reenter the dataframe name repeatedly and to make a much cleaner version of the 
+aggregate function.
+
+
+To create the same dataframe using dplyr we use the following code:
+```{r}
+# SUMMARY BY DATE
+wesa.summary <-
+  wesa.counts.cleaned %>%
+  mutate(count.numeric = as.numeric(Count_cleaned)) %>%
+  filter(RecordID != 'RecordID' & !is.na(count.numeric)) %>%
+  group_by(RecordID) %>%
+  dplyr::summarize(max.count = max(count.numeric, na.rm=T), 
+            avg.count = mean(count.numeric, na.rm=T),
+            sd.count = sd(count.numeric, na.rm = T),
+            sum.count = sum(count.numeric, na.rm = T), 
+            n.counts = n() )%>%
+  mutate(SiteID = substr(RecordID, 1, 4), 
+         Year = substr(RecordID, 5, 8), 
+         Month = substr(RecordID, 9,9),
+         Day = substr(RecordID, 10, 11)) %>%
+  left_join(site.codes, by = 'SiteID')
+```
+
+The code contains a key piece that makes the code easy to use and readable: `%>%`. 
+This is a 'pipe'. It basically takes the output from the left-had side and shoves it into the 
+right hand function. 
+For example:
+```{r}
+c('The', 'dad', 'threw', 'the', 'baby') %>% cat('in the air\n')
+```
+It is extremely useful for chaining a series of functions without having to create temporary objects.
+There are several dplyr functions which are fairly self explanitory. I use filter most often as it is much more readable than
+subset. The dplyr cheat sheet has some good examples of ways to use filter.
+
+Another good function is summarize. You can spell it as an american or brit, but either way it works best combined with `group_by()`.
+Group_by, well groups the data set based on the values in the named columns. So to summarize the wesa data by month for each year, we would use
+`group_by(Month, Year)`. This then is piped into the summarize function, which allows you to create a summary table. For example if I wanted the largest single count for the surveys in each year for both July and August, I just have to use the code:
+
+```{r}
+wesa.summary %>% # original data set, piped to grouping function
+    group_by(Month, Year) %>% # Group by month and year send to summarize function
+    dplyr::summarize(record.count = max(max.count)) # use the dplyr:: to avoid plyr's function which removes other columns
+```
+
+Mutate is a good way to create new columns from previous ones. It replaces `df$new.column <- df$col1 + df$col2`. It is mostly 
+useful when creating several columns at once.
+
+The final function used here is `left_join()`. If you've used sql or any sort of database code, this will be familiar. Basically there are three main joins: Left, Right and Full. Left join, keeps all the values from the first dataframe and populates the columns from the right dataframe into it using the values in a given column. In this case I use the site codes to assign the estimated area, and full name to the row.
+Right join does the opposite and full join keeps all rows from both data frames.
+
+For example:
+```{r, echo=FALSE}
+print(wesa.counts.cleaned[1,] ) %>%
+  left_join(site.codes, by = 'SiteID') %>%
+  print()
+```
+You can see from the second output, we have appended the correct site information based on the SiteID value.
+
+Overall, I'd say the filter, and group_by/summarise functions are ones I use regularily and always with a pipe. 
+
+## Merge sites using grep
+
+Another way I used dplyr was to take all the sites surveyed along Boundary Bay and convert it into a single value. To do this I used `grepl()`, which 
+searches a column and in conjunction with `filter()` pulls out rows that match the search term. 
+
+```{r, echo = TRUE}
+  # Time counts at boundary bay
+
+bb <- 
+  wesa.counts.cleaned %>%
+  filter(grepl(pattern = '^BB', SiteID )) %>%
+  select(ID, RecordID, CountNum,Time, SiteID, count.numeric) %>%
+  mutate(SiteID = substr(RecordID, 1, 4), 
+         Year = substr(RecordID, 5, 8), 
+         Month = substr(RecordID, 9,9),
+         Day = substr(RecordID, 10, 11),
+         datecode = paste(Year, Month, Day, sep = "")) %>%
+  arrange(datecode, CountNum, SiteID) 
+
+
+```
+```{r, echo=FALSE}
+print(ggplot(bb, aes(SiteID, count.numeric)) + geom_boxplot() + theme_few())
+```
+
+To combine each count into a single value for the entire bay, I need to group by the survey date and the individual counts. Then I can sum or average accross the sites as is
+needed for my analysis.
+```{r}
+bb.final.sum <- 
+  bb %>%
+  group_by(datecode, CountNum, Year, Month, Day) %>%
+  dplyr::summarize(sum.count = sum(count.numeric), 
+                 avg.count = mean(count.numeric), 
+                 max.count = max(count.numeric),
+                 number.sites = n(),
+                 SiteID = 'BBAY',
+                 SiteName = 'Boundary Bay',
+                 sd.count = sd(count.numeric),
+                 RecordID = paste(SiteID, datecode, sep = "")) %>%
+    group_by(RecordID) %>%
+    dplyr::summarize(max.count = max(sum.count, na.rm=T), 
+                     avg.count = mean(sum.count, na.rm=T),
+                     sd.count = sd(sum.count, na.rm = T),
+                     sum.count = sum(sum.count, na.rm = T), 
+                     n.counts = n() )%>%
+    mutate(SiteID = substr(RecordID, 1, 4), 
+           Year = substr(RecordID, 5, 8), 
+           Month = substr(RecordID, 9,9),
+           Day = substr(RecordID, 10, 11))%>%
+  left_join(site.codes, by = 'SiteID')
+```
+```{r, echo=FALSE}
+print(ggplot(bb.final.sum, aes(Year, max.count)) + geom_boxplot()+ facet_grid(.~Month) + theme_few())
+```
+
+This final data set can then be used to create a new data frame that contains only a single daily value for all of Boundary Bay.
+```{r}
+wesa.w.large.sites <- 
+  wesa.summary %>%
+  filter(!grepl(pattern = '^BB', SiteID )) %>%
+  full_join(bb.final.sum)
+```
